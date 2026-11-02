@@ -14,7 +14,7 @@
 #
 #Imports
 from DatabaseMigration.IDatabaseMigration import IDatabaseMigration
-from DatabaseMigration.databaseMigrationUtility import KeywordType, DatabaseDeletionHelper
+from DatabaseMigration.databaseMigrationUtility import DatabaseDeletionHelper
 from sqlalchemy import Engine, MetaData, Table, delete, select
 from sqlalchemy.dialects.postgresql import insert
 import csv
@@ -75,20 +75,12 @@ class Migrator(IDatabaseMigration):
             return result
 
     def rollback(self, databaseEngine: Engine) -> bool:
-        """This function rolls the database back to version 2.2 which involves removing the changes 
-           associated with version 2.3 
-
-           :param databaseEngine: Engine - the engine of the database we are connecting to (semaphore)
-           :return: bool indicating successful update
-        """
-        fileNames = ['magnoliaDatum.csv']
-        fileTypes = [ KeywordType.DATA_DATUM]
-
-        # Using the utility helper class to delete any data dependent on the rows added in the 2.3 Migration
-        helper = DatabaseDeletionHelper(databaseEngine)
-
-        for file, type in zip(fileNames, fileTypes):
-            for rowDict in self.readInitCSV(file):
-                helper.deep_delete_keyword(rowDict["code"], type)
-
+        """Roll version 2.3 back without deleting data that uses its datum."""
+        datum_rows = self.readInitCSV('magnoliaDatum.csv')
+        with databaseEngine.begin() as connection:
+            helper = DatabaseDeletionHelper(connection)
+            for row in datum_rows:
+                # The FK protects inputs/outputs that still depend on this datum.
+                helper.delete_reference_row("ref_dataDatum", row["code"])
+        helper.write_deletion_dump()
         return True

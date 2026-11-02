@@ -11,7 +11,6 @@
 #
 #Imports
 from DatabaseMigration.IDatabaseMigration import IDatabaseMigration
-from DatabaseMigration.databaseMigrationUtility import KeywordType, DatabaseDeletionHelper
 from sqlalchemy import Engine, text
 
 

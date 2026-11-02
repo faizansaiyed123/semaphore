@@ -15,7 +15,7 @@
 #
 #Imports
 from DatabaseMigration.IDatabaseMigration import IDatabaseMigration
-from DatabaseMigration.databaseMigrationUtility import KeywordType, DatabaseDeletionHelper
+from DatabaseMigration.databaseMigrationUtility import DatabaseDeletionHelper
 from sqlalchemy import Engine, MetaData, Table, delete, select
 from sqlalchemy.dialects.postgresql import insert
 import csv
@@ -81,23 +81,15 @@ class Migrator(IDatabaseMigration):
             return result
 
     def rollback(self, databaseEngine: Engine) -> bool:
-        """This function rolls the database back to version 2.7 which involves removing the changes 
-           associated with version 2.8.
-
-           :param databaseEngine: Engine - the engine of the database we are connecting to (semaphore)
-           :return: bool indicating successful update
-        """
-        # Note that we only explicitly include the locations csv here
-        # because a part of the deep_delete protocol of the data locations
-        # table is to delete the location from the mapping table. 
-        fileNames = ['sbiLocations.csv']
-        fileTypes = [KeywordType.DATA_LOCATION]
-
-        # Using the utility helper class to delete any data dependent on the rows added in the 2.7 Migration
-        helper = DatabaseDeletionHelper(databaseEngine)
-
-        for file, type in zip(fileNames, fileTypes):
-            for rowDict in self.readInitCSV(file):
-                helper.deep_delete_keyword(rowDict["code"], type)
-
+        """Roll version 2.8 back, removing only its location and mapping rows."""
+        location_rows = self.readInitCSV('sbiLocations.csv')
+        mapping_rows = self.readInitCSV('sbiMapping.csv')
+        with databaseEngine.begin() as connection:
+            helper = DatabaseDeletionHelper(connection)
+            for row in mapping_rows:
+                helper.delete_mapping_row(row["dataLocationCode"], row["dataSourceCode"])
+            # Preserve input/output data; a live FK prevents reference deletion.
+            for row in location_rows:
+                helper.delete_reference_row("ref_dataLocation", row["code"])
+        helper.write_deletion_dump()
         return True

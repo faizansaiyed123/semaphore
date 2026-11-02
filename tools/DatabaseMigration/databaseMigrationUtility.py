@@ -1,153 +1,81 @@
 # -*- coding: utf-8 -*-
-#databaseMigrationUtility.py
-#----------------------------------
-# Created By: Ops Team
-# Created Date: 5/20/2024
-# Version: 1.0
-#----------------------------------
-""" This file houses basic utility functions for database migration operations. 
- """ 
-#----------------------------------
-# 
-#
-#Imports
-from enum import Enum
-from sqlalchemy import Engine, MetaData, delete
+# databaseMigrationUtility.py
+# ----------------------------------
+"""Utilities for explicit, transactional database migration deletions."""
 
-class KeywordType(Enum):
-    """A class to enumerate the different keyword types. 
-    """
-    DATA_UNIT = 0
-    DATA_SOURCE = 1
-    DATA_LOCATION = 2
-    DATA_SERIES = 3
-    DATA_DATUM = 4
+from sqlalchemy import Connection, MetaData, delete
 
-KEYWORD_DEPENDENT_TABLES = {
-    KeywordType.DATA_UNIT:{
-        "column_name": "dataUnit",
-        "primaries":["inputs", "outputs"],
-        "reference": "ref_dataUnit"
-    },
-    KeywordType.DATA_SOURCE:{
-        "column_name": "dataSource",
-        "primaries":["inputs", "dataLocation_dataSource_mapping"],
-        "reference": "ref_dataSource"
-    },
-    KeywordType.DATA_LOCATION:{
-        "column_name": "dataLocation",
-        "primaries":["inputs", "outputs", "dataLocation_dataSource_mapping"],
-        "reference": "ref_dataLocation"
-    },
-    KeywordType.DATA_SERIES:{
-        "column_name": "dataSeries",
-        "primaries":["inputs", "outputs"],
-        "reference": "ref_dataSeries"
-    },
-    KeywordType.DATA_DATUM:{
-        "column_name": "dataDatum",
-        "primaries":["inputs", "outputs"],
-        "reference": "ref_dataDatum"
-    }
-}
 
-class DatabaseDeletionHelper():
-    """ A class with helper functions to delete data from the database. 
-        Intended to be used in data migration rollback methods. 
-        :param dataEngine - Engine - The database we are working with.
+class DatabaseDeletionHelper:
+    """Delete migration-owned reference rows on a caller-managed connection.
+
+    The caller must create this helper inside ``with engine.begin()``. The
+    helper never opens a connection or commits. It deliberately does not
+    delete dependent inputs/outputs: foreign-key constraints prevent a
+    rollback from destroying data created after the original migration.
     """
 
-    def __init__(self, databaseEngine: Engine):
-        self.__engine = databaseEngine
-        metadata = MetaData()
-        metadata.reflect(bind=databaseEngine)
-        self.__metadata = metadata
+    def __init__(self, connection: Connection):
+        if not connection.in_transaction():
+            raise RuntimeError(
+                "DatabaseDeletionHelper requires an active transaction; "
+                "pass a connection from 'with databaseEngine.begin()'."
+            )
+        self.__connection = connection
+        self.__metadata = MetaData()
+        self.__metadata.reflect(bind=connection)
+        self.__deleted_rows = []
 
-    def __delete_dependant_rows(self, keyword: str, tableName: str, columnName: str):
-        """ A function to delete dependant rows according to the passed keyword, tableName, and columnName. 
-            :param: keyword - str - The foreign key we want to delete.
-            :param: tableName - str - The name of the table we want to delete from.
-            :param: columnName - str - The name of the colum that the keyword is in. 
-        """
-        # In dataLocation_dataSource_mapping table the column names are different from the columns in the other tables
-        processedColumnName = columnName if tableName != "dataLocation_dataSource_mapping" else f'{columnName}Code'
-        
-        # Connect to the database and delete 
-        with self.__engine.connect() as conn:
+    def __require_active_transaction(self) -> None:
+        if not self.__connection.in_transaction():
+            raise RuntimeError(
+                "The migration transaction is no longer active. "
+                "Create the helper inside 'with databaseEngine.begin()'."
+            )
 
-            # Reflect the table we want to delete from
-            table = self.__metadata.tables[tableName]
-            
-            # Now delete the dependent data rows
-            delete_stmt = delete(table).where(table.c[processedColumnName] == keyword).returning(table)
-            cursor = conn.execute(delete_stmt)
-            result = cursor.fetchall()  
-            conn.commit()
+    def __record_deleted_rows(self, result) -> None:
+        self.__deleted_rows.extend(result.fetchall())
 
-        # Write deleted data to file
-        self.__deletion_data_dump(result)
+    def delete_reference_row(self, table_name: str, keyword: str) -> None:
+        """Delete a migration-owned row from an explicitly named reference table."""
+        self.__require_active_transaction()
+        if not table_name.startswith("ref_"):
+            raise ValueError(f"Expected a reference table, got {table_name!r}")
+        table = self.__metadata.tables[table_name]
+        result = self.__connection.execute(
+            delete(table).where(table.c.code == keyword).returning(table)
+        )
+        self.__record_deleted_rows(result)
 
-    def __delete_reference_row(self, keyword: str, tableName: str):
-        """ A function to delete reference rows according to the passed keyword and tableName. 
-            :param: keyword - str - The foreign key we want to delete.
-            :param: tableName - str - The name of the table we want to delete from.
-        """
-        # Connect to the database and delete reference row
-        with self.__engine.connect() as conn:
+    def delete_mapping_row(self, dataLocationCode: str, dataSourceCode: str) -> None:
+        """Delete only the exact location/source mapping owned by a migration."""
+        self.__require_active_transaction()
+        table = self.__metadata.tables["dataLocation_dataSource_mapping"]
+        result = self.__connection.execute(
+            delete(table)
+            .where(
+                (table.c.dataLocationCode == dataLocationCode)
+                & (table.c.dataSourceCode == dataSourceCode)
+            )
+            .returning(table)
+        )
+        self.__record_deleted_rows(result)
 
-            # Reflect the table we want to delete from
-            table = self.__metadata.tables[tableName]
-            
-            # Now delete the reference data rows
-            delete_stmt = delete(table).where(table.c.code == keyword).returning(table)
-            cursor = conn.execute(delete_stmt)
-            result = cursor.fetchall()  
-            conn.commit()
-
-        # Write deleted data to file
-        self.__deletion_data_dump(result)
-        
-    def delete_mapping_row(self, dataLocationCode: str, dataSourceCode: str):
-        """ A function to delete a SPECEFIC row from the mapping table without deleting rows from any other reference tables.
-            :param: dataLocationCode - str - The dataLocationCode for row to be deleted.
-            :param: dataSourceCode - str - The dataSourceCode for row to be deleted.
-        """
-        # Connect to the database and delete reference row
-        with self.__engine.connect() as conn:
-
-            # Reflect the table we want to delete from
-            table = self.__metadata.tables["dataLocation_dataSource_mapping"]
-            
-            # Now delete the reference data rows
-            delete_stmt = delete(table).where((table.c.dataSourceCode == dataSourceCode) & (table.c.dataLocationCode == dataLocationCode)).returning(table)
-            cursor = conn.execute(delete_stmt)
-            result = cursor.fetchall()  
-            conn.commit()
-
-        # Write deleted data to file
-        self.__deletion_data_dump(result)
-
-    def __deletion_data_dump(self, result: any): 
-        """ A function to write deleted database information to a file for safekeeping. 
-            :param: result - any - The information we want to keep.
-        """
-        with open("deletion_dump.txt", "a") as file:
-            for line in result:
-                file.write(str(line)+"\n")
-
-    def deep_delete_keyword(self, keyword: str, keywordType: KeywordType):
-        """ A function to delete foreign keys from the database that 
-            potentially have dependent data in the primary tables. 
-            :param: keyword - str - The foreign key we want to delete.
-            :param: keywordType - KeywordType - The enumerator of the type of foreign key that the keyword is.
-        """
-
-        # Depending on keyword type get dictionary information
-        keywordInfo = KEYWORD_DEPENDENT_TABLES[keywordType]
-
-        # Delete keyword from dependent tables
-        for tableName in keywordInfo["primaries"]:
-            self.__delete_dependant_rows(keyword, tableName, keywordInfo["column_name"])
-
-        # Delete keyword from reference table
-        self.__delete_reference_row(keyword, keywordInfo["reference"])
+    def write_deletion_dump(self) -> None:
+        """Persist deleted rows after commit; dump failure must not undo the DB migration."""
+        if self.__connection.in_transaction():
+            raise RuntimeError(
+                "Write the deletion dump only after the migration transaction commits."
+            )
+        if not self.__deleted_rows:
+            return
+        try:
+            with open("deletion_dump.txt", "a", encoding="utf-8") as file:
+                for row in self.__deleted_rows:
+                    file.write(f"{row}\n")
+        except OSError as error:
+            # The database transaction is already committed. A diagnostic dump
+            # failure must not cause migrate_db.py to skip its version update.
+            print(f"Warning: failed to write deletion dump: {error}")
+        finally:
+            self.__deleted_rows.clear()

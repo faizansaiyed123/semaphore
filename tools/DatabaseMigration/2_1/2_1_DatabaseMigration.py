@@ -15,7 +15,7 @@
 #
 #Imports
 from DatabaseMigration.IDatabaseMigration import IDatabaseMigration
-from DatabaseMigration.databaseMigrationUtility import KeywordType, DatabaseDeletionHelper
+from DatabaseMigration.databaseMigrationUtility import DatabaseDeletionHelper
 from sqlalchemy import Engine, MetaData, Table, delete, select
 from sqlalchemy.dialects.postgresql import insert
 import csv
@@ -88,20 +88,26 @@ class Migrator(IDatabaseMigration):
             return result
 
     def rollback(self, databaseEngine: Engine) -> bool:
-        """This function rolls the database back to version 2.0 which involves removing the changes 
-           associated with version 2.1 
+        """Roll version 2.1 back, removing only rows introduced by this migration."""
+        location_rows = self.readInitCSV('magnoliaLocations.csv')
+        source_rows = self.readInitCSV('semaphoreDataSource.csv')
+        datum_rows = self.readInitCSV('magnoliaDatums.csv')
+        series_rows = self.readInitCSV('magnoliaSeries.csv')
+        mapping_rows = self.readInitCSV('magnoliaMapping.csv')
 
-           :param databaseEngine: Engine - the engine of the database we are connecting to (semaphore)
-           :return: bool indicating successful update
-        """
-        fileNames = ['magnoliaLocations.csv', 'semaphoreDataSource.csv', 'magnoliaDatums.csv', 'magnoliaSeries.csv']
-        fileTypes = [KeywordType.DATA_LOCATION, KeywordType.DATA_SOURCE, KeywordType.DATA_DATUM, KeywordType.DATA_SERIES]
-
-        # Using the utility helper class to delete any data dependent on the rows added in the 2.1 Migration
-        helper = DatabaseDeletionHelper(databaseEngine)
-
-        for file, type in zip(fileNames, fileTypes):
-            for rowDict in self.readInitCSV(file):
-                helper.deep_delete_keyword(rowDict["code"], type)
-
+        with databaseEngine.begin() as connection:
+            helper = DatabaseDeletionHelper(connection)
+            # Delete only mapping pairs explicitly added by this migration.
+            for row in mapping_rows:
+                helper.delete_mapping_row(row["dataLocationCode"], row["dataSourceCode"])
+            # Preserve input/output data. A live foreign key prevents unsafe deletion.
+            for row in location_rows:
+                helper.delete_reference_row("ref_dataLocation", row["code"])
+            for row in source_rows:
+                helper.delete_reference_row("ref_dataSource", row["code"])
+            for row in datum_rows:
+                helper.delete_reference_row("ref_dataDatum", row["code"])
+            for row in series_rows:
+                helper.delete_reference_row("ref_dataSeries", row["code"])
+        helper.write_deletion_dump()
         return True

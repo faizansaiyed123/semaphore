@@ -13,7 +13,7 @@
 #
 #Imports
 from DatabaseMigration.IDatabaseMigration import IDatabaseMigration
-from DatabaseMigration.databaseMigrationUtility import KeywordType, DatabaseDeletionHelper
+from DatabaseMigration.databaseMigrationUtility import DatabaseDeletionHelper
 from sqlalchemy import Engine, MetaData, Table
 from sqlalchemy.dialects.postgresql import insert
 import csv
@@ -77,20 +77,12 @@ class Migrator(IDatabaseMigration):
         return result
 
     def rollback(self, databaseEngine: Engine) -> bool:
-        """This function rolls the database back to version 3.2 which involves removing the changes 
-           associated with version 3.3 (removing the NDFD_JSON data source).
-
-           :param databaseEngine: Engine - the engine of the database we are connecting to (semaphore)
-           :return: bool indicating successful rollback
-        """
-        fileNames = ['newRows.csv']
-        fileTypes = [KeywordType.DATA_SOURCE]
-
-        # Using the utility helper class to delete any data dependent on the rows added in the 3.3 Migration
-        helper = DatabaseDeletionHelper(databaseEngine)
-
-        for file, type in zip(fileNames, fileTypes):
-            for rowDict in self.__readInitCSV(file):
-                helper.deep_delete_keyword(rowDict["code"], type)
-
+        """Roll version 3.3 back without deleting data that uses NDFD_JSON."""
+        source_rows = self.__readInitCSV('newRows.csv')
+        with databaseEngine.begin() as connection:
+            helper = DatabaseDeletionHelper(connection)
+            for row in source_rows:
+                # The FK protects any inputs that still depend on this source.
+                helper.delete_reference_row("ref_dataSource", row["code"])
+        helper.write_deletion_dump()
         return True

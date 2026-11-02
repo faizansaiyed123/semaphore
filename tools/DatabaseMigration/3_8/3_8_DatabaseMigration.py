@@ -10,18 +10,18 @@ This db migration script adds Seadrift, Aransas Wildlife Refuge, and ESB to the 
 and adds Port Lavaca, Seadrift, and Aransas Wildlife Refuge to the dataLocation_dataSource_mapping table
 for the operation of the ESB cold stunning model.
 
-NOTE: The ref_dataLocation table depends on the mapping table, inputs table, and the outputs table.
-The rows in the location csv and mapping csv are not the same, so the rollback
-will first delete rows from the inputs and outputs table based on the dataLocation csv,
-then delete the rows from the mapping table based on the dataMapping csv, then finally
-delete the rows from the ref_dataLocation table based on the dataLocation csv.
+NOTE: The location and mapping CSV files do not contain the same rows.
+Rollback removes only the mapping pairs and reference locations introduced by
+this migration. It intentionally preserves input/output data created after the
+migration; foreign-key constraints prevent removing a location that is still
+referenced.
 """ 
 # ----------------------------------
 # 
 #
 # Imports
 from DatabaseMigration.IDatabaseMigration import IDatabaseMigration
-from DatabaseMigration.databaseMigrationUtility import KeywordType, DatabaseDeletionHelper
+from DatabaseMigration.databaseMigrationUtility import DatabaseDeletionHelper
 from sqlalchemy import Engine
 from sqlalchemy.sql import text
 import csv
@@ -135,39 +135,18 @@ class Migrator(IDatabaseMigration):
 
 
     def rollback(self, databaseEngine: Engine) -> bool:
+        """Roll version 3.8 back without deleting pre-existing input/output data.
+
+        Only mapping pairs and reference locations created by this migration are
+        removed. Existing data that references a location causes the transaction
+        to fail through its foreign-key constraint instead of being deleted.
         """
-        This function rolls the database back to version 3.7 which involves removing the changes 
-        associated with version 3.8. The rollback will delete rows from the inputs, outputs, mapping,
-        and location tables based on the dataLocation.csv file.
-
-        :param databaseEngine: Engine - the engine of the database we are connecting to (semaphore)
-
-        :return: bool indicating successful update
-
-        NOTE: In the future we should update our helper functions to perform a single
-        commit for all deletions instead of committing after each deletion. It is
-        NOT RECOMMENDED to continue using deep_delete_keyword from the helper
-        until it can be refactored.
-        """
-        # Note that we only explicitly include the locations csv here
-        # because a part of the deep_delete protocol of the data locations
-        # table is to delete the location from the mapping table. 
-        fileNames = ['dataLocation.csv']
-        fileTypes = [KeywordType.DATA_LOCATION]
-
-        location_rows, _ = self._read_rows()
-
-        # Using the utility helper class to delete any data dependent on the rows added in the 3.7 Migration
-        helper = DatabaseDeletionHelper(databaseEngine)
-
-        for file, type in zip(fileNames, fileTypes):
-            for rowDict in location_rows:
-                helper.deep_delete_keyword(rowDict["code"], type)
-
-        # since Port Lavaca and Port O Connor were added to the mapping table
-        # but not the location table, we need to delete them individually from the mapping table
-        # NOTE: This doesn't remove entries in the inputs table that use these mappings
-        helper.delete_mapping_row('PortLavaca', 'NOAATANDC')
-        helper.delete_mapping_row('PortOConnor', 'NOAATANDC')
-
+        location_rows, mapping_rows = self._read_rows()
+        with databaseEngine.begin() as connection:
+            helper = DatabaseDeletionHelper(connection)
+            for row in mapping_rows:
+                helper.delete_mapping_row(row["dataLocationCode"], row["dataSourceCode"])
+            for row in location_rows:
+                helper.delete_reference_row("ref_dataLocation", row["code"])
+        helper.write_deletion_dump()
         return True

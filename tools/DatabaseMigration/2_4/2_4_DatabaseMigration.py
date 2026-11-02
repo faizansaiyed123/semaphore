@@ -13,7 +13,6 @@
 #
 #Imports
 from DatabaseMigration.IDatabaseMigration import IDatabaseMigration
-from DatabaseMigration.databaseMigrationUtility import KeywordType, DatabaseDeletionHelper
 from sqlalchemy import Engine, MetaData, Table, delete, select, update
 from sqlalchemy.dialects.postgresql import insert 
 import csv

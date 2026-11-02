@@ -13,7 +13,7 @@
 #
 #Imports
 from DatabaseMigration.IDatabaseMigration import IDatabaseMigration
-from DatabaseMigration.databaseMigrationUtility import KeywordType, DatabaseDeletionHelper
+from DatabaseMigration.databaseMigrationUtility import DatabaseDeletionHelper
 from sqlalchemy import Engine, MetaData, Table
 from sqlalchemy.dialects.postgresql import insert 
 import csv
@@ -77,23 +77,12 @@ class Migrator(IDatabaseMigration):
         return result
 
     def rollback(self, databaseEngine: Engine) -> bool:
-        """This function rolls the database back to version 3.0 which involves removing the changes 
-           associated with version 3.1.
-
-           :param databaseEngine: Engine - the engine of the database we are connecting to (semaphore)
-           :return: bool indicating successful update
-        """
-        # Note that we only explicitly include the locations csv here
-        # because a part of the deep_delete protocol ofr the data locations
-        # table is to delete the location from the mapping table. 
-        fileNames = ['newRows.csv']
-        fileTypes = [KeywordType.DATA_SOURCE]
-
-        # Using the utility helper class to delete any data dependent on the rows added in the 2.1 Migration
-        helper = DatabaseDeletionHelper(databaseEngine)
-
-        for file, type in zip(fileNames, fileTypes):
-            for rowDict in self.__readInitCSV(file):
-                helper.deep_delete_keyword(rowDict["code"], type)
-
+        """Roll version 3.1 back without deleting data that uses the new source."""
+        source_rows = self.__readInitCSV('newRows.csv')
+        with databaseEngine.begin() as connection:
+            helper = DatabaseDeletionHelper(connection)
+            for row in source_rows:
+                # The FK protects any inputs that still depend on this source.
+                helper.delete_reference_row("ref_dataSource", row["code"])
+        helper.write_deletion_dump()
         return True

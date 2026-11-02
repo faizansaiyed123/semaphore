@@ -27,13 +27,14 @@ class Migrator(IDatabaseMigration):
            :return: bool indicating successful update
         """
 
-        deletion_helper = DatabaseDeletionHelper(databaseEngine)
+        with databaseEngine.begin() as connection:
+            deletion_helper = DatabaseDeletionHelper(connection)
+            deletion_helper.delete_mapping_row(
+                dataLocationCode='lagunamadre',
+                dataSourceCode='LIGHTHOUSE'
+            )
 
-        deletion_helper.delete_mapping_row(
-            dataLocationCode = 'lagunamadre',
-            dataSourceCode = 'LIGHTHOUSE'
-        )
-
+        deletion_helper.write_deletion_dump()
         return True
         
 

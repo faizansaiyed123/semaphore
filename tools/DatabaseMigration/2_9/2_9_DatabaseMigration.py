@@ -15,7 +15,7 @@
 #
 #Imports
 from DatabaseMigration.IDatabaseMigration import IDatabaseMigration
-from DatabaseMigration.databaseMigrationUtility import KeywordType, DatabaseDeletionHelper
+from DatabaseMigration.databaseMigrationUtility import DatabaseDeletionHelper
 from sqlalchemy import Engine, MetaData, Table, delete, select
 from sqlalchemy.dialects.postgresql import insert
 import csv
@@ -79,22 +79,11 @@ class Migrator(IDatabaseMigration):
             return result
 
     def rollback(self, databaseEngine: Engine) -> bool:
-        """This function rolls the database back to version 2.8 which involves removing the changes 
-           associated with version 2.9.
-
-           :param databaseEngine: Engine - the engine of the database we are connecting to (semaphore)
-           :return: bool indicating successful update
-        """
+        """Roll version 2.9 back by deleting its exact mapping row."""
         dataLocationCode = "lagunamadre"
         dataSourceCode = "NDFD_EXP"
-        
-        # Using the utility helper class to delete any data dependent on the rows added in the 2.9 Migration
-        helper = DatabaseDeletionHelper(databaseEngine)
-        
-        try:
+        with databaseEngine.begin() as connection:
+            helper = DatabaseDeletionHelper(connection)
             helper.delete_mapping_row(dataLocationCode, dataSourceCode)
-        except Exception as e:
-            print(f"Failed to delete mapping row: {e}")
-
-
+        helper.write_deletion_dump()
         return True
